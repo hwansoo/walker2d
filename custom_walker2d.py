@@ -67,7 +67,7 @@ class CustomEnvWrapper(gym.Wrapper):
         super().__init__(env)
 
         self.stuck_counter = 0
-        self.prev_x = 0
+        self.prev_x = 0.0
         self.bump_practice = bump_practice
         self.bump_challenge = bump_challenge
 
@@ -79,6 +79,8 @@ class CustomEnvWrapper(gym.Wrapper):
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
+
+        self.passed_bumps = set()
 
         # bump_infos 초기화 (처음 한 번만)
         # __init__에서 이걸 초기화하면 여러 개 병렬 학습할 때 오류가 발생한다.
@@ -170,31 +172,27 @@ class CustomEnvWrapper(gym.Wrapper):
         return truncated
 
     def _floor_height(self, pos_x):
-        floor_height = 0.0
         lefts = [left for left, _, _ in self.bump_infos]
         idx = bisect.bisect_right(lefts, pos_x) - 1
         if idx >= 0:
             left, right, height = self.bump_infos[idx]
             if left <= pos_x <= right:
-                floor_height = height
+                return height
 
-        return floor_height
+        return 0.0
 
     def custom_observation(self, obs):
         # 기본 observation 뒤에 다음과 같은 observation을 추가함
         # 0-17: 기본 observation
         # 8: 바닥 높이 - 현재 torso의 x 좌표 위치의 바닥 높이 (bump 위에 있는 경우의 정보 제공)
         # 9-23: 범프 중심이 torso의 x 좌표 위치보다 오른쪽에 있는 다섯 개의 범프의 시작, 끝, 높이 정보
-
-        base_obs = obs.copy()
         torso_x = obs[0]
 
         # torso_x가 어떤 범프 위에 있는 경우 그 범프 높이를 floor_height로 설정
         floor_height = self._floor_height(torso_x)
 
-        # 범프 중심이 torso_x보다 오른쪽에 있는 범프만 추출
-        bumps_ahead = [x for x in self.bump_infos if (x[0] + x[1]) > 2 * torso_x]
-        bumps_ahead = bumps_ahead[:5]  # 다섯 개만 선택
+        # 범프 중심이 torso_x보다 오른쪽에 있는 범프만 추출, 다섯 개만 선택
+        bumps_ahead = [b for b in self.bump_infos if (b[0] + b[1]) / 2.0 > torso_x][:5]
 
         while len(bumps_ahead) < 5:
             # 다섯 개가 안 되는 경우 (0, 0, 0)으로 패딩
@@ -202,9 +200,7 @@ class CustomEnvWrapper(gym.Wrapper):
 
         bump_features = np.array(bumps_ahead).flatten()
 
-        custom_obs = np.concatenate([base_obs, np.array([floor_height]), bump_features])
-
-        return custom_obs
+        return np.concatenate([obs, np.array([floor_height]), bump_features])
 
     def custom_reward(self, obs, original_reward):
         x_pos = obs[0]
@@ -228,19 +224,21 @@ class CustomEnvWrapper(gym.Wrapper):
             reward -= 0.5
 
         # target height reward
-        target_clearance = 1.25  # base height over terrain
-        target_z = floor_height + target_clearance
-        height_error = z_pos - target_z
-
-        # dense reward: 쫓아가도록 유도
+        height_error = z_pos - (floor_height + 1.25)
         reward += np.exp(-3 * height_error**2) * 1.0  # peak=1, falls off quickly
         # 또는 reward -= abs(height_error) * 0.5  # L1 penalty 방식도 가능
 
         # --- bump 통과 보상 ---
         if hasattr(self, "prev_x"):
-            for left, right, height in self.bump_infos:
-                if self.prev_x < left <= x_pos:
-                    reward += 3.0
+            for i, (left, _, height) in enumerate(self.bump_infos):
+                if (
+                    i not in self.passed_bumps
+                    and self.prev_x < left <= x_pos
+                    and z_pos > floor_height + 0.5
+                    # and abs(torso_angle) < 0.5
+                ):
+                    reward += height * 10.0
+                    self.passed_bumps.add(i)
         self.prev_x = x_pos
 
         # --- 기존 reward 일부 반영 ---
