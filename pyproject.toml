@@ -1,0 +1,14 @@
+[project]
+name = "rl-walker2d-project"
+version = "0.1.0"
+dependencies = [
+    "stable_baselines3[extra]>=2.0.0a9",
+    "gymnasium[mujoco]",
+    # Add any other packages you installed
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest",
+    # Add dev tools here if needed
+]
