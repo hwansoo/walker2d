@@ -81,6 +81,7 @@ class CustomEnvWrapper(gym.Wrapper):
         obs, info = self.env.reset(**kwargs)
 
         # bump_infos 초기화 (처음 한 번만)
+        # __init__에서 이걸 초기화하면 여러 개 병렬 학습할 때 오류가 발생한다.
         if not hasattr(self, "bump_infos") or not self.bump_infos:
             try:
                 model = self.env.unwrapped.model
@@ -102,6 +103,39 @@ class CustomEnvWrapper(gym.Wrapper):
                 print("[Warning] Failed to extract bump_infos:", e)
                 self.bump_infos = []
 
+        # Start state randomization
+        sim_initialized = (
+            hasattr(self.env.unwrapped, "sim") and self.env.unwrapped.sim is not None
+        )
+
+        if sim_initialized:
+            sim = self.env.unwrapped.sim
+            qpos = sim.data.qpos.copy()
+            qvel = sim.data.qvel.copy()
+
+            # Choose random position to start
+            start_x = np.random.uniform(0.0, 35.0)
+            qpos[0] = start_x
+
+            floor_height = self._floor_height(start_x)
+            qpos[1] = floor_height + 1.25  # torso_z
+
+            # Initialize the joints
+            qpos[2:] = 0.0 + 0.01 * np.random.randn(len(qpos) - 2)
+            qvel[:] = 0.0 + 0.01 * np.random.randn(len(qvel))
+
+            sim.set_state(sim.get_state()._replace(qpos=qpos, qvel=qvel))
+            sim.forward()
+
+            obs = self.env._get_obs()
+        else:
+            # 경고는 최초 1회만
+            if not hasattr(self, "_sim_warning_printed"):
+                print(
+                    "[Warning] sim not initialized yet. Skipping start-state override."
+                )
+                self._sim_warning_printed = True
+
         custom_obs = self.custom_observation(obs)
         return custom_obs, info
 
@@ -115,25 +149,36 @@ class CustomEnvWrapper(gym.Wrapper):
 
     def custom_terminated(self, terminated, obs):
         # TODO: Implement your own termination condition
-        torso_x = obs[0]
+        # torso_x = obs[0]
 
-        delta_x = abs(torso_x - self.prev_x)
-        self.prev_x = torso_x
+        # delta_x = abs(torso_x - self.prev_x)
+        # self.prev_x = torso_x
 
-        if delta_x < 0.01:  # 거의 안 움직인 경우
-            self.stuck_counter += 1
-        else:
-            self.stuck_counter = 0
+        # if delta_x < 0.01:  # 거의 안 움직인 경우
+        #     self.stuck_counter += 1
+        # else:
+        #     self.stuck_counter = 0
 
-        # 50 프레임 이상 연속으로 안 움직이는 경우 종료
-        if self.stuck_counter > 50:
-            return True
+        # # 50 프레임 이상 연속으로 안 움직이는 경우 종료
+        # if torso_x > 0.5 and self.stuck_counter > 100:
+        #     return True
 
         return terminated
 
     def custom_truncated(self, truncated):
         # TODO: Implement your own truncation condition
         return truncated
+
+    def _floor_height(self, pos_x):
+        floor_height = 0.0
+        lefts = [left for left, _, _ in self.bump_infos]
+        idx = bisect.bisect_right(lefts, pos_x) - 1
+        if idx >= 0:
+            left, right, height = self.bump_infos[idx]
+            if left <= pos_x <= right:
+                floor_height = height
+
+        return floor_height
 
     def custom_observation(self, obs):
         # 기본 observation 뒤에 다음과 같은 observation을 추가함
@@ -144,15 +189,8 @@ class CustomEnvWrapper(gym.Wrapper):
         base_obs = obs.copy()
         torso_x = obs[0]
 
-        floor_height = 0
-
         # torso_x가 어떤 범프 위에 있는 경우 그 범프 높이를 floor_height로 설정
-        lefts = [left for left, _, _ in self.bump_infos]
-        idx = bisect.bisect_right(lefts, torso_x) - 1
-        if idx >= 0:
-            left, right, height = self.bump_infos[idx]
-            if left <= torso_x < right:
-                floor_height = height
+        floor_height = self._floor_height(torso_x)
 
         # 범프 중심이 torso_x보다 오른쪽에 있는 범프만 추출
         bumps_ahead = [x for x in self.bump_infos if (x[0] + x[1]) > 2 * torso_x]

@@ -19,9 +19,13 @@ class NormalizeCheckpointCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         if self.n_calls % self.save_freq == 0:
-            print(f"[Checkpoint Triggered at step {self.n_calls}]")
-            step = self.n_calls
-            model_path = os.path.join(self.save_path, f"walker_model_{step}_steps.zip")
+            actual_timesteps = self.model.num_timesteps
+            print(
+                f"[Checkpoint] Saved after {self.n_calls} callback calls (≈ {actual_timesteps} timesteps)"
+            )
+            model_path = os.path.join(
+                self.save_path, f"walker_model_{actual_timesteps}_steps.zip"
+            )
             vecnorm_path = model_path.replace(".zip", "_vecnormalize.pkl")
 
             self.model.save(model_path)
