@@ -62,7 +62,8 @@ while True:
         action, _ = model.predict(obs, deterministic=True)
     else:
         action = vec_env.action_space.sample()
-    obs, reward, terminated, truncated, _ = vec_env.step(action)
+
+    obs, reward, done, info = vec_env.step(action)
 
     if args.record:
         frame = base_env.render()
@@ -97,5 +98,7 @@ while True:
             print("Exiting...")
             break
 
-    if terminated or truncated:
+    if done[0]:
         obs = vec_env.reset()
+
+vec_env.close()

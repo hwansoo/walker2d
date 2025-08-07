@@ -66,31 +66,8 @@ class CustomEnvWrapper(gym.Wrapper):
 
         super().__init__(env)
 
-        if bump_challenge or bump_practice:
-            # bump 지형 정보 추출
-            geom_names = self.env.unwrapped.model.geom_names
-            geom_pos = self.env.unwrapped.model.geom_pos
-            geom_size = self.env.unwrapped.model.geom_size
-
-            bump_infos = []
-
-            for i, name in enumerate(geom_names):
-                if "bump" in name:
-                    x_center, _, _ = geom_pos[i]
-                    half_length, _, height = geom_size[i]
-
-                    bump_start_x = x_center - half_length
-                    bump_end_x = x_center + half_length
-
-                    bump_infos.append((bump_start_x, bump_end_x, height))
-
-            # 왼쪽부터 bump 순서로 정렬 (겹치는 범프는 없다고 가정)
-            bump_infos.sort(key=lambda x: x[0])
-
-            self.bump_infos = bump_infos
-        else:
-            self.bump_infos = []
-
+        self.stuck_counter = 0
+        self.prev_x = 0
         self.bump_practice = bump_practice
         self.bump_challenge = bump_challenge
 
@@ -102,19 +79,56 @@ class CustomEnvWrapper(gym.Wrapper):
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
+
+        # bump_infos 초기화 (처음 한 번만)
+        if not hasattr(self, "bump_infos") or not self.bump_infos:
+            try:
+                model = self.env.unwrapped.model
+                geom_pos = model.geom_pos
+                geom_size = model.geom_size
+                geom_names = [model.geom(i).name for i in range(model.ngeom)]
+
+                bump_infos = []
+                for i, name in enumerate(geom_names):
+                    if name and "bump" in name:
+                        x_center, _, _ = geom_pos[i]
+                        half_length, _, height = geom_size[i]
+                        bump_start_x = x_center - half_length
+                        bump_end_x = x_center + half_length
+                        bump_infos.append((bump_start_x, bump_end_x, height))
+                bump_infos.sort(key=lambda x: x[0])
+                self.bump_infos = bump_infos
+            except Exception as e:
+                print("[Warning] Failed to extract bump_infos:", e)
+                self.bump_infos = []
+
         custom_obs = self.custom_observation(obs)
         return custom_obs, info
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         custom_obs = self.custom_observation(obs)
-        custom_reward = self.custom_reward(obs, reward)
+        custom_reward = self.custom_reward(custom_obs, reward)
         custom_terminated = self.custom_terminated(terminated, obs)
         custom_truncated = self.custom_truncated(truncated)
         return custom_obs, custom_reward, custom_terminated, custom_truncated, info
 
     def custom_terminated(self, terminated, obs):
         # TODO: Implement your own termination condition
+        torso_x = obs[0]
+
+        delta_x = abs(torso_x - self.prev_x)
+        self.prev_x = torso_x
+
+        if delta_x < 0.01:  # 거의 안 움직인 경우
+            self.stuck_counter += 1
+        else:
+            self.stuck_counter = 0
+
+        # 50 프레임 이상 연속으로 안 움직이는 경우 종료
+        if self.stuck_counter > 50:
+            return True
+
         return terminated
 
     def custom_truncated(self, truncated):

@@ -19,6 +19,7 @@ class NormalizeCheckpointCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         if self.n_calls % self.save_freq == 0:
+            print(f"[Checkpoint Triggered at step {self.n_calls}]")
             step = self.n_calls
             model_path = os.path.join(self.save_path, f"walker_model_{step}_steps.zip")
             vecnorm_path = model_path.replace(".zip", "_vecnormalize.pkl")
@@ -83,39 +84,41 @@ else:
 
 save_path = f"./checkpoints/{folder_name}/"
 
-num_cpu = args.n_cpu
-env = SubprocVecEnv(
-    [make_env(args.bump_practice, args.bump_challenge) for _ in range(num_cpu)]
-)
-env = VecMonitor(env)
+if __name__ == "__main__":
+    num_cpu = args.n_cpu
+    env = SubprocVecEnv(
+        [make_env(args.bump_practice, args.bump_challenge) for _ in range(num_cpu)]
+    )
+    env = VecMonitor(env)
 
-if args.continue_from:
-    vecnorm_path = args.continue_from.replace(".zip", "_vecnormalize.pkl")
-    if os.path.exists(vecnorm_path):
-        env = VecNormalize.load(vecnorm_path, env)
-        print(f"[Load] Loaded VecNormalize from {vecnorm_path}")
+    if args.continue_from:
+        vecnorm_path = args.continue_from.replace(".zip", "_vecnormalize.pkl")
+        if os.path.exists(vecnorm_path):
+            env = VecNormalize.load(vecnorm_path, env)
+            print(f"[Load] Loaded VecNormalize from {vecnorm_path}")
+        else:
+            env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
+            print(
+                f"[Warning] VecNormalize not found at {vecnorm_path}, starting fresh."
+            )
+        model = PPO.load(args.continue_from, env)
+        print(f"[Load] Loaded model from {args.continue_from}")
     else:
         env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
-        print(f"[Warning] VecNormalize not found at {vecnorm_path}, starting fresh.")
-    model = PPO.load(args.continue_from, env)
-    print(f"[Load] Loaded model from {args.continue_from}")
-else:
-    env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
-    model = PPO(
-        "MlpPolicy",
-        env,
-        verbose=1,
-        tensorboard_log="./logs/",
-        policy_kwargs=policy_kwargs,
-        device="cpu",
-        learning_rate=0.0001,
+        model = PPO(
+            "MlpPolicy",
+            env,
+            verbose=1,
+            tensorboard_log="./logs/",
+            policy_kwargs=policy_kwargs,
+            device="cpu",
+            learning_rate=0.0001,
+        )
+        print("[Init] New model initialized.")
+
+    # 커스텀 체크포인트 콜백 사용
+    checkpoint_callback = NormalizeCheckpointCallback(
+        save_freq=100_000, save_path=save_path, verbose=1
     )
-    print("[Init] New model initialized.")
 
-
-# 커스텀 체크포인트 콜백 사용
-checkpoint_callback = NormalizeCheckpointCallback(
-    save_freq=100000, save_path=save_path, verbose=1
-)
-
-model.learn(total_timesteps=args.resume_timesteps, callback=checkpoint_callback)
+    model.learn(total_timesteps=args.resume_timesteps, callback=checkpoint_callback)
